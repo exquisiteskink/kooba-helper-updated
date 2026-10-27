@@ -2,58 +2,81 @@
 For a better kooba<=>abook experience.
 
 
-## Description:
-* This adds "Copy Title" to Abook forum code boxes and post titles
-* This adds search links to Abook forums code boxes that use [code] search strings.
-* Search engines added are NZBIndex, BinSearch, NZBKing
-* This adds NZBDonkey support
+## Description
+* Adds "Copy Title" to Abook forum code boxes and post titles.
+* Adds search links to Abook forum code boxes that use `[code]` search strings.
+  Search engines: NZBIndex, BinSearch (all groups + Abook-only), NZBKing.
+* Adds an **NZBDonkey** highlight block: select it, right-click, "Get NZB File".
 
 
-## Notice:
-* This tool is not affiliated with the forum, other than the fact that it was written to be used on it.
-* It is an independent tool.
-* If you run into any trouble, please contact me and do not contact the forum staff about it.
+## Notice
+* This tool is not affiliated with the forum; it was written to be used on it.
+* It is an independent tool. If you run into trouble, contact the maintainer and
+  **not** the forum staff.
 
 
-## Maintained/Created By:
+## Maintained / created by
 * [Shrek] BTC: 1ANyHwihu9dL2CZ9LUZ48FdYTzyz8CCCFf
 * rhymesagainsthumanity
-* pushr (original creator of the chrome extension)
+* pushr (original creator of the Chrome extension)
 
 
-## Installation:
-1. Install TamperMonkey from your Browser's Add-on/Extension site
-1. Visit https://exquisiteskink.github.io/kooba-helper-updated/kooba-helper.user.js
-1. Hit the Install button
-1. Maybe give TamperMonkey permission for Incognito/Private browsing mode if you use that
-1. To update, just visit the user.js page mentioned above and click the update button.
-   (The script uses TamperMonkey's built-in update check.)
+## Install (TamperMonkey / Violentmonkey)
+1. Install TamperMonkey (or Violentmonkey) from your browser's add-on/extension
+   store — this works in **Chromium, Brave and Firefox**.
+2. Open
+   `https://raw.githubusercontent.com/exquisiteskink/kooba-helper-updated/master/kooba-helper.user.js`
+3. Click **Install**.
+
+TamperMonkey checks `@updateURL` automatically, so future updates are handled
+by the extension.
 
 
-## Bookmarklet:
-* This is not the recommended way to use the tool.
-* If you don't want to install TamperMonkey, a bookmarklet is available.
-   * Drag the "kooba helper" link below to your bookmarks bar.
-   * Click it on any Abook page you want to use it on (it does not auto-run).
-* The bookmarklet is generated from the same source as the userscript and
-  works in Chromium, Brave and Firefox.
-* Get the bookmarklet at https://exquisiteskink.github.io/kooba-helper-updated/bookmarklet.html
+## Bookmarklet
+If you do not want a userscript manager, a self-contained bookmarklet is
+generated from the same code at:
+
+`https://raw.githubusercontent.com/exquisiteskink/kooba-helper-updated/master/bookmarklet.html`
+
+Drag the "kooba helper" button to your bookmarks bar and click it on each
+Abook page you want it to act on (it does not run automatically).
 
 
-## What's different from the upstream version
-* Cross-browser safe DOM handling (`.codeheader` discovery, `BR` vs text-node
-  handling, `querySelector('#author')` guards) so it reliably runs in
-  Chromium, Brave and Firefox.
-* New Zealand Donkey integration: the block is now formatted so that
-  NZBDonkey's "Get NZB File" (select/text) path can parse it reliably:
-  first line = topic title, then `Header:` and `Password:` lines.
-* "Copy Title" uses the modern Clipboard API with a legacy
-  `execCommand('copy')` textarea fallback for Firefox.
-* Inline `oncontextmenu`/`onclick` selection handlers were replaced with
-  CSS `user-select: all` plus a click handler, so right-clicking and
-  selecting text works as expected in all three browsers.
-* Dynamically added posts in a thread are picked up via a
-  `MutationObserver`, and the "thank-you" click button is detoured so a
-  newly posted topic still gets the search links and NZBDonkey block.
-* Styles are injected once and the script is only applied to pages matched
-  by `@match *://abook.link/*` (plus `@include` for Greasemonkey compat).
+## Browser compatibility notes
+The upstream script used brittle DOM traversal that breaks in modern
+Chromium/Brave/Firefox. This fork fixes that:
+
+* **Code extraction** walks past whitespace text nodes and handles both the
+  `<br>`-after-header (PostBot) layout and the direct-text-node layout, so the
+  "code" is never a stray newline.
+* **Missing elements** (`#author`, `nextSibling`, missing match groups) no
+  longer throw and abort the whole script.
+* **Copy Title** uses `navigator.clipboard.writeText()` with an
+  `execCommand('copy')` `<textarea>` fallback, so it works in all three
+  browsers including non-secure contexts.
+* **Selection** uses CSS `user-select: all` instead of deprecated inline
+  `oncontextmenu`/`onclick` handlers, so text can be selected and passed to
+  NZBDonkey reliably.
+* **Dynamic content** is handled with a debounced `MutationObserver`, and the
+  forum's "thank you" handler is detoured so newly revealed posts are processed.
+* **Scoped execution**: styles/UI are only injected on pages that actually
+  contain Kooba post content.
+
+
+## NZBDonkey integration
+NZBDonkey extracts the title, header and password from **selected text**. The
+highlight block is formatted to match its best-practice rules:
+
+```
+<title>
+Header: <nzb header / subject>
+Password: <password, if present>
+```
+
+* The title is always on the first line.
+* The password is taken from the "Password" code box, whether it lives in the
+  same container or a separate post block.
+* Password-only code boxes do **not** get their own search links; they are
+  folded into the main block's `Password:` line.
+* The block is a `<pre>` with real newlines, so the copied/selected text is
+  exactly what NZBDonkey parses.

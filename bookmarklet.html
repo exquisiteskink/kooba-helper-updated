@@ -4,196 +4,546 @@
 <meta charset="utf-8">
 <title>kooba-helper bookmarklet</title>
 <style>
-body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; color: #222; }
-code, a.button { font-family: ui-monospace, monospace; }
-a.button { display: inline-block; padding: 0.6rem 1rem; margin-top: 1rem; color: #fff; background: #4f46e5; text-decoration: none; border-radius: 6px; cursor: pointer; }
+body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; color: #222; line-height: 1.45; }
+a.button { display: inline-block; padding: .6rem 1rem; margin: 1rem 0; color: #fff; background: #4f46e5; text-decoration: none; border-radius: 6px; font-family: ui-monospace, monospace; }
 a.button:hover { background: #4338ca; }
+code { background: #f3f4f6; padding: .1rem .3rem; border-radius: 4px; }
 </style>
 </head>
 <body>
 <h1>kooba-helper bookmarklet</h1>
-<p>
-Drag the button below to your bookmarks bar (or right-click &rarr; "Bookmark this link").
+<p>Drag the button below to your bookmarks bar (or right-click &rarr; "Bookmark this link").
 When you are on an Abook listing, click it to add search links for
 <a href="https://nzbindex.com">NZBIndex</a>, <a href="https://www.binsearch.info">BinSearch</a>,
-<a href="https://nzbking.com">NZBKing</a> and an <a href="https://tensai75.github.io/NZBDonkey/">NZBDonkey</a>
-highlight block plus a &ldquo;Copy Title&rdquo; button.
-</p>
-<p>
-It works with Chromium, Brave and Firefox (and can be used as a normal
-bookmarklet — click it on every page you want to use it on).
-</p>
+<a href="https://nzbking.com">NZBKing</a>, a &ldquo;Copy Title&rdquo; button and an
+<a href="https://tensai75.github.io/NZBDonkey/">NZBDonkey</a> highlight block.</p>
+<p>Works in Chromium, Brave and Firefox. Unlike the userscript, it does not
+run automatically &mdash; click it on every page you want to use it on.</p>
 <a id="bookmarklet" class="button" href="#">kooba helper</a>
+<p><small>Prefer the automatic version? Install the userscript from
+<code>kooba-helper.user.js</code>.</small></p>
 
 <script type="text/javascript" id="bookmarklet-source">
-/* kooba-helper core (bookmarklet-safe, single IIFE). */
-(function () {
-  function sanitizeCommon(code) {
+(function(){
+/**
+ * Clean a raw code string for use as a query / display value.
+ * Strips "abook/..." URL-style prefixes, quotes and repeated backslashes.
+ *
+ * @param {string} code
+ * @returns {string}
+ */
+function sanitizeCommon(code) {
     if (!code) return '';
-    var c = code.replace(/(?:abook|kooba)\.*(?:to|link|ws)*\s*(?:-|\||~)*\s*/gi, '');
-    c = c.replace(/['"]+/g, ' ');
-    c = c.replace(/\\&+/g, ' ');
-    return c.trim();
-  }
-  var indexers = [
-    { name: 'NZBIndex', url: 'https://DoNotRefer.Me/#https://nzbindex.com/search?max=25&minage=&maxage=&hidespam=1&hidepassword=0&sort=agedesc&minsize=&maxsize=&complete=0&hidecross=0&hasNFO=0&poster=&q={query}', fn: function (c) { return sanitizeCommon(c); } },
-    { name: 'BinSearch', url: 'https://DoNotRefer.Me/#https://www.binsearch.info/?max=1000&adv_age=&adv_sort=date&server=2&q={query}', fn: function (c) { return sanitizeCommon(c); } },
-    { name: 'BinSearch-Abook', url: 'https://DoNotRefer.Me/#https://www.binsearch.info/?max=100&adv_g=alt.binaries.mp3.abooks&adv_age=&adv_sort=date&q={query}', fn: function (c) { return sanitizeCommon(c); } },
-    { name: 'NZBKing', url: 'https://DoNotRefer.Me/#http://nzbking.com/search/?q=%22{query}%22', fn: function (c) { return sanitizeCommon(c); } }
-  ];
-  function buildSearchLinks(code) {
-    if (!code) return '';
-    var list = '';
-    indexers.forEach(function (i) {
-      var q = encodeURIComponent(i.fn(code));
-      list += '<li><a rel="noreferrer" rel="noopener" target="_blank" href="' + i.url.replace(/{query}/g, q) + '">' + i.name + '</a></li>';
-    });
-    return list;
-  }
-  function isPasswordCode(c) { return c.toLowerCase().indexOf('password') !== -1; }
-  function isPasswordLabel(el) {
-    var s = el.previousSibling, n = 0;
-    while (s && n < 3) {
-      if ((s.textContent || '').toLowerCase().indexOf('password') !== -1) return true;
-      s = s.previousSibling; n++;
-    }
-    return false;
-  }
-  function extractCodeText(header) {
-    // Find the first non-header node that directly follows the .codeheader,
-    // skipping any whitespace text nodes.
-    var probe = header.nextSibling;
-    while (probe && probe.nodeType === 3 && /\s/.test(probe.textContent)) {
-      probe = probe.nextSibling || probe.parentNode.nextSibling;
+    let cleaned = code.replace(/(?:abook|kooba)\.*(?:to|link|ws)*\s*(?:-|\||~)*\s*/gi, '');
+    cleaned = cleaned.replace(/['"]+/g, ' ');
+    cleaned = cleaned.replace(/\\&+/g, ' ');
+    return cleaned.trim();
+}
+
+/**
+ * Resolve the text that belongs to a `.codeheader` element.
+ *
+ * Kooba/abook forum builds differ in how they lay out the codebox after a
+ * `.codeheader`:
+ *   - PostBot style has a `<br>` between the header and the codebox;
+ *   - some builds insert a whitespace text node in between;
+ *   - others place the codebox directly after the header.
+ *
+ * Whitespace text nodes are skipped so a stray newline never becomes the
+ * "code" value. The first `.bbc_code` inside the following codebox is used
+ * as the header text.
+ *
+ * @param {Element} header
+ * @returns {string}
+ */
+function extractCodeText(header) {
+    // Advance past any whitespace-only text nodes that follow the header.
+    let probe = header.nextSibling;
+    while (probe && probe.nodeType === 3 && !/\S/.test(probe.textContent || '')) {
+        probe = probe.nextSibling;
     }
     if (!probe) return '';
-    var name = probe.nodeName ? probe.nodeName.toUpperCase() : '';
-    if (name === 'BR') {
-      // PostBot style: <br> is followed by the codebox. Walk past whitespace.
-      var node = probe.nextSibling;
-      while (node) {
-        if (node.nodeType === 3) {
-          var text = node.textContent.replace(/\s+/g, ' ').trim();
-          if (text) return text;
-        } else if (node.nodeType === 1) {
-          var firstCode = node.querySelector ? node.querySelector('.bbc_code') : null;
-          if (firstCode) return (firstCode.textContent || '').trim();
-          return (node.textContent || '').trim();
+
+    const nodeName = probe.nodeName && probe.nodeName.toUpperCase();
+
+    if (nodeName === 'BR') {
+        // PostBot style: <br> is followed by the codebox. Walk past any
+        // whitespace text nodes to find the actual code element.
+        let node = probe.nextSibling;
+        while (node) {
+            if (node.nodeType === 3) {
+                const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+                if (text) return text;
+            } else if (node.nodeType === 1) {
+                const firstCode = node.querySelector ? node.querySelector('.bbc_code') : null;
+                return (firstCode ? firstCode.textContent : node.textContent || '').trim();
+            }
+            node = node.nextSibling;
         }
-        node = node.nextSibling;
-      }
-      return '';
+        return '';
     }
-    if (probe.nodeType === 3) return probe.textContent.trim();
-    var d = probe.nextElementSibling;
-    if (d) {
-      var firstCode = d.querySelector('.bbc_code');
-      if (firstCode) return (firstCode.textContent || '').trim();
-      return (d.textContent || '').trim();
+
+    // New style: header immediately followed by a text node containing the code.
+    if (probe.nodeType === 3) {
+        return (probe.textContent || '').trim();
     }
-    return probe.textContent.trim();
-  }
-  function getTopicTitle() {
-    var author = document.querySelector('#author');
+
+    // Header followed by an element (e.g. the codebox div).
+    const firstCode = probe.querySelector ? probe.querySelector('.bbc_code') : null;
+    return (firstCode ? firstCode.textContent : probe.textContent || '').trim();
+}
+
+/**
+ * Read the topic title from the `#author` block.
+ *
+ * @returns {string|null}
+ */
+function getTopicTitle() {
+    const author = document.querySelector('#author');
     if (!author) return null;
-    var n = author.nextSibling;
-    if (n && n.nodeType === 3) {
-      var m = n.textContent.match(/Topic:(.*?)(?:\(Read)/i);
-      if (m && m[1]) return m[1].replace(/\[spot\]/gi, '').trim();
+
+    // In modern Kooba the `<a name="author">` element is followed by a text
+    // node ("Topic: ...") and then the topic summary link.
+    let node = author.nextSibling;
+    if (node && node.nodeType === 3) {
+        const match = (node.textContent || '').match(/Topic:(.*?)(?:\(Read)/i);
+        if (match && match[1]) {
+            return match[1].replace(/\[spot\]/gi, '').trim();
+        }
     }
-    var t = author.textContent || '';
-    m = t.match(/Topic:(.*?)(?:\(Read)/i);
-    if (m && m[1]) return m[1].replace(/\[spot\]/gi, '').trim();
+
+    // Fallback: look for any visible "Topic: ..." text in the author block.
+    const text = author.textContent || '';
+    const match = text.match(/Topic:(.*?)(?:\(Read)/i);
+    if (match && match[1]) {
+        return match[1].replace(/\[spot\]/gi, '').trim();
+    }
     return null;
-  }
-  function copyTextToClipboard(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(function () {});
+}
+
+const indexers = [
+    {
+        name: 'NZBIndex',
+        url: 'https://DoNotRefer.Me/#https://nzbindex.com/search?max=25&minage=&maxage=&hidespam=1&hidepassword=0&sort=agedesc&minsize=&maxsize=&complete=0&hidecross=0&hasNFO=0&poster=&q={query}',
+        codeFn: function (code) { return sanitizeCommon(code); }
+    },
+    {
+        name: 'BinSearch',
+        url: 'https://DoNotRefer.Me/#https://www.binsearch.info/?max=1000&adv_age=&adv_sort=date&server=2&q={query}',
+        codeFn: function (code) { return sanitizeCommon(code); }
+    },
+    {
+        name: 'BinSearch-Abook',
+        url: 'https://DoNotRefer.Me/#https://www.binsearch.info/?max=100&adv_g=alt.binaries.mp3.abooks&adv_age=&adv_sort=date&q={query}',
+        codeFn: function (code) { return sanitizeCommon(code); }
+    },
+    {
+        name: 'NZBKing',
+        url: 'https://DoNotRefer.Me/#http://nzbking.com/search/?q=%22{query}%22',
+        codeFn: function (code) { return sanitizeCommon(code); }
     }
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'absolute';
-    ta.style.left = '-9999px';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); } catch (e) {}
-    document.body.removeChild(ta);
-  }
-  function showCopied() {
-    var ex = document.querySelector('.kooba-copied-feedback');
-    if (ex) ex.remove();
-    var d = document.createElement('div');
-    d.className = 'kooba-copied-feedback';
-    d.textContent = 'Copied to clipboard';
-    d.style.cssText = 'position:fixed;top:10px;right:10px;background:rgba(0,0,0,.75);color:yellow;padding:6px 10px;border-radius:4px;font-family:sans-serif;z-index:99999;';
-    document.body.appendChild(d);
-    setTimeout(function () { d.remove(); }, 2000);
-  }
-  function injectStyle() {
-    if (document.getElementById('kooba-style')) return;
-    var s = document.createElement('style');
-    s.id = 'kooba-style';
-    s.textContent =
-      '.kooba-search-links,.kooba-search-links span,.kooba-search-links ul,.kooba-search-links li{display:inline-block}.kooba-search-links span{margin-left:.5em}.kooba-search-links ul{list-style:none;margin:0;padding-left:0}.kooba-search-links li{margin:0;padding:0}.kooba-search-links li:not(:last-child):after{color:#ccc;content:"|"}.kooba-search-links a{margin:0;padding:0 .5em}.kooba-title-copy{color:#57aad2}.kooba-title-copy:hover{text-decoration:underline}.kooba-title-copy2{margin-left:30px;color:#9383e0;font-weight:normal}.kooba-title-copy2:hover{text-decoration:underline}.kooba-nzbdonkey{margin-top:20px;border:1px dotted yellow;padding:10px}.kooba-nzbdonkey-title{font-weight:bold;color:red}a.kooba-nzbdonkey-help{text-decoration:none;color:#2196f3;border-bottom:1px dotted #2196f3}.kooba-nzbdonkey-text{font-size:10px;font-weight:normal;font-family:monospace;color:#bb96e0;padding-left:30px;user-select:all;-moz-user-select:all;cursor:text}';
-    document.head.appendChild(s);
-  }
-  function buildKoobaBlock(header) {
-    var code = extractCodeText(header);
-    var title = getTopicTitle();
-    if (isPasswordLabel(header)) { header.classList.add('kooba_crunched'); return; }
-    var password = '';
-    var parent = header.parentElement;
-    var boxes = parent ? parent.querySelectorAll('.bbc_code') : [];
-    if (boxes.length >= 2) {
-      for (var i = 1; i < boxes.length; i++) {
-        var st = boxes[i] ? (boxes[i].textContent || '').trim() : '';
-        if (isPasswordCode(st)) { password = st; break; }
-      }
-    }
-    var passwordLike = isPasswordCode(code) && code.length < 200;
-    var searchHtml = '<div class="kooba-search-links"><span>Search:</span>' + (passwordLike ? '' : '<ul>' + buildSearchLinks(code) + '</ul>') + '</div>';
-    var t = document.createElement('template');
-    t.innerHTML = searchHtml;
-    while (t.content.firstChild) header.appendChild(t.content.firstChild);
-    var copyBtn = document.createElement('a');
-    copyBtn.className = 'kooba-title-copy2';
-    copyBtn.title = 'Copy "' + (title || 'Untitled topic') + '" to clipboard';
-    copyBtn.textContent = ' [Copy Title]';
-    copyBtn.dataset.cipboard = title || '';
-    copyBtn.addEventListener('click', function (e) { e.preventDefault(); copyTextToClipboard(title || 'Untitled topic'); });
-    header.appendChild(copyBtn);
-    var lines = [];
-    lines.push(title || 'Untitled topic');
-    var h = sanitizeCommon(code);
-    if (h) lines.push('Header: ' + h);
-    var block =
-      '<div class="kooba-nzbdonkey">' +
-      '<div class="kooba-nzbdonkey-title">NZBDonkey Highlight Text <a class="kooba-nzbdonkey-help" target="_blank" href="https://tensai75.github.io/NZBDonkey/" title="This extension lets you right-click the text below and choose \'Get NZB File\' to automatically find and process the NZB. Another extension is required.">?</a></div>' +
-      '<div class="kooba-nzbdonkey-text" title="' + lines.join('\n') + '">' + lines.join('\n') + '</div>' +
-      '</div>';
-    header.classList.add('kooba_crunched');
-    header.parentElement.insertAdjacentHTML('beforeend', block);
-  }
-  function processKoobaSearch() {
-    var headers = document.querySelectorAll('.codeheader');
-    [].forEach.call(headers, function (h) {
-      if (h.classList.contains('kooba_crunched')) return;
-      buildKoobaBlock(h);
+];
+
+/**
+ * Build the HTML list of search-engine links for a piece of code.
+ *
+ * @param {string} code
+ * @returns {string}
+ */
+function buildSearchLinks(code) {
+    if (!code) return '';
+    let list = '';
+    indexers.forEach(function (indexer) {
+        const query = encodeURIComponent(indexer.codeFn(code));
+        const link = indexer.url.replace(/{query}/g, query);
+        list +=
+            '<li>' +
+            '<a rel="noreferrer noopener" target="_blank" href="' + link + '">' +
+            indexer.name +
+            '</a>' +
+            '</li>';
     });
-  }
-  function init() {
-    injectStyle();
-    processKoobaSearch();
-    if (window.MutationObserver) {
-      var obs = new MutationObserver(function () { processKoobaSearch(); });
-      obs.observe(document.body, { childList: true, subtree: true });
-    } else {
-      setInterval(processKoobaSearch, 5000);
+    return list;
+}
+
+/**
+ * Decide whether a `.codeheader` is a password label.
+ *
+ * The label can either be the header's own text (e.g. the header literally
+ * reads "Password") or a previous sibling (e.g. an "NZB Password" heading).
+ *
+ * @param {Element} header
+ * @returns {boolean}
+ */
+function isLikelyPasswordLabel(header) {
+    // The header's own text is the strongest signal.
+    const ownText = (header.textContent || '').trim().toLowerCase();
+    if (ownText && ownText.indexOf('password') !== -1) return true;
+
+    // Otherwise look at the preceding siblings (up to 5) for the word.
+    let sibling = header.previousSibling;
+    let count = 0;
+    while (sibling && count < 5) {
+        const text = (sibling.textContent || '').toLowerCase();
+        if (text.indexOf('password') !== -1) return true;
+        sibling = sibling.previousSibling;
+        count++;
     }
-  }
-  if (document.readyState === 'complete' || document.readyState === 'interactive') { init(); }
-  else { window.addEventListener('load', init, { once: true }); }
+    return false;
+}
+
+/**
+ * A code block is a password when it contains the word "password".
+ *
+ * @param {string} code
+ * @returns {boolean}
+ */
+function isPasswordCode(code) {
+    return (code || '').toLowerCase().indexOf('password') !== -1;
+}
+
+/**
+ * Decide whether a given `.codeheader`/code pair is really a password block
+ * (as opposed to the NZB header block that should get search links).
+ *
+ * @param {Element} header
+ * @param {string} code
+ * @returns {boolean}
+ */
+function looksLikePasswordBlock(header, code) {
+    if (isLikelyPasswordLabel(header)) return true;
+    // A dedicated password codebox is short, single-line and mentions
+    // "password". This avoids skipping a real NZB header whose subject just
+    // happens to contain the word.
+    return isPasswordCode(code) && code.indexOf('\n') === -1 && code.length < 100;
+}
+
+/**
+ * Find the password that belongs to a main header: either the next
+ * `.bbc_code` in the same container (the original layout) or the nearest
+ * following password block in document order.
+ *
+ * @param {Element} header
+ * @returns {string}
+ */
+function findPassword(header) {
+    // 1) Scan the other code boxes in the same container.
+    const parent = header.parentElement;
+    const boxes = parent ? parent.querySelectorAll('.bbc_code') : [];
+    for (let i = 1; i < boxes.length; i++) {
+        const box = boxes[i];
+        const text = (box.textContent || '').trim();
+        if (isPasswordCode(text) || isLikelyPasswordLabel(box)) {
+            return text;
+        }
+    }
+
+    // 2) Fall back to the nearest password block after this header.
+    const headers = Array.prototype.slice.call(document.querySelectorAll('.codeheader'));
+    const index = headers.indexOf(header);
+    for (let j = index + 1; j < headers.length; j++) {
+        const candidate = headers[j];
+        const text = extractCodeText(candidate);
+        if (isLikelyPasswordLabel(candidate) || looksLikePasswordBlock(candidate, text)) {
+            return text;
+        }
+    }
+    return '';
+}
+
+/**
+ * Create a "Copy Title" link and wire clipboard copy.
+ *
+ * @param {string} title
+ * @param {Element} reference
+ */
+function createCopyTitleLink(title, reference) {
+    const link = document.createElement('a');
+    link.id = 'kooba-title-copy';
+    link.className = 'kooba-title-copy';
+    link.dataset.cipboard = title;
+    link.title = 'Copy "' + title + '" to clipboard';
+    link.textContent = ' [Copy]';
+    link.addEventListener('click', function (event) {
+        event.preventDefault();
+        copyTextToClipboard(title);
+        showCopiedFeedback();
+    });
+    if (reference) {
+        reference.parentNode.insertBefore(link, reference.nextSibling);
+    }
+}
+
+/**
+ * Append an HTML string to an element (works around whitespace text nodes).
+ *
+ * @param {Element} anchor
+ * @param {string} html
+ */
+function appendHtmlToAnchor(anchor, html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    while (template.content.firstChild) {
+        anchor.appendChild(template.content.firstChild);
+    }
+}
+
+/**
+ * Remove a leading "Header:" / "Password:" label from a value so we don't
+ * end up with "Password: Password: ...".
+ *
+ * @param {string} value
+ * @param {string} label
+ * @returns {string}
+ */
+function stripLabel(value, label) {
+    if (!value) return '';
+    // Only strip when the label is followed by a colon or whitespace, so a
+    // password like "password-abc-xyz" keeps its content.
+    const re = new RegExp('^\\s*' + label + '(?::\\s*|\\s+)', 'i');
+    return value.replace(re, '').trim();
+}
+
+/**
+ * The block NZBDonkey reads when the user selects it and chooses
+ * "Get NZB File".
+ *
+ * NZBDonkey's best-practice rules are:
+ *   1. Title on the first line;
+ *   2. "Header: ..." line;
+ *   3. "Password: ..." line (omitted when there is no password).
+ *
+ * The text is rendered with real newlines (not nested block elements) so the
+ * selection text is exactly what NZBDonkey parses, in Chromium, Brave and
+ * Firefox. `user-select: all` lets a single click select the whole block.
+ *
+ * @param {string} title
+ * @param {string} header
+ * @param {string} password
+ * @returns {string}
+ */
+function buildNzbdonkeyBlock(title, header, password) {
+    const headerLine = stripLabel(sanitizeCommon(header), 'header');
+    const passwordLine = stripLabel(sanitizeCommon(password), 'password');
+
+    const lines = [title];
+    if (headerLine) lines.push('Header: ' + headerLine);
+    if (passwordLine) lines.push('Password: ' + passwordLine);
+    const body = lines.join('\n');
+
+    return (
+        '<div class="kooba-nzbdonkey">' +
+        '<div class="kooba-nzbdonkey-title">NZBDonkey Highlight Text ' +
+        '<a class="kooba-nzbdonkey-help" target="_blank" href="https://tensai75.github.io/NZBDonkey/" ' +
+        'title="This extension lets you right-click the text below and choose \'Get NZB File\' ' +
+        'to automatically find and process the NZB. Another extension is required.">?</a></div>' +
+        '<pre class="kooba-nzbdonkey-text">' +
+        body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+        '</pre>' +
+        '</div>'
+    );
+}
+
+/**
+ * Inject the stylesheet once.
+ */
+function injectStyle() {
+    if (document.getElementById('kooba-style')) return;
+    const style = document.createElement('style');
+    style.id = 'kooba-style';
+    style.textContent = [
+        '.kooba-search-links, .kooba-search-links span, .kooba-search-links ul, .kooba-search-links li { display: inline-block; }',
+        '.kooba-search-links span { margin-left: .5em; }',
+        '.kooba-search-links ul { list-style: none; margin: 0; padding-left: 0; }',
+        '.kooba-search-links li { margin: 0; padding: 0; }',
+        '.kooba-search-links li:not(:last-child):after { color: #ccc; content: "|"; }',
+        '.kooba-search-links a { margin: 0; padding: 0 .5em; }',
+        '.kooba-title-copy { color: #57aad2; }',
+        '.kooba-title-copy:hover { text-decoration: underline; }',
+        '.kooba-title-copy2 { margin-left: 30px; color: #9383e0; font-weight: normal; }',
+        '.kooba-title-copy2:hover { text-decoration: underline; }',
+        '.kooba-nzbdonkey { margin-top: 20px; border: 1px dotted yellow; padding: 10px; }',
+        '.kooba-nzbdonkey-title { font-weight: bold; color: red; }',
+        'a.kooba-nzbdonkey-help { text-decoration: none; color: #2196f3; border-bottom: 1px dotted #2196f3; }',
+        '.kooba-nzbdonkey-text { font-size: 10px; font-weight: normal; font-family: monospace; color: #bb96e0; padding: 0 0 0 30px; margin: 0; white-space: pre-wrap; user-select: all; -moz-user-select: all; cursor: text; }'
+    ].join('\n');
+    (document.head || document.documentElement).appendChild(style);
+}
+
+/**
+ * Copy a string to the clipboard with a modern API fallback so it works in
+ * Chromium, Brave and Firefox.
+ *
+ * @param {string} text
+ */
+function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(function () { /* fall through */ });
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'absolute';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+    } catch (err) { /* ignore */ }
+    document.body.removeChild(textarea);
+}
+
+/**
+ * Create the "Copy Title" link shown inside the search-links block.
+ *
+ * @param {string} title
+ * @returns {Element}
+ */
+function makeCopyButton(title) {
+    const link = document.createElement('a');
+    link.className = 'kooba-title-copy2';
+    link.dataset.cipboard = title;
+    link.title = 'Copy "' + title + '" to clipboard';
+    link.textContent = ' [Copy Title]';
+    link.addEventListener('click', function (event) {
+        event.preventDefault();
+        copyTextToClipboard(title);
+        showCopiedFeedback();
+    });
+    return link;
+}
+
+/**
+ * Build and inject the Kooba block into a single `.codeheader`.
+ *
+ * @param {Element} header
+ */
+function buildKoobaBlock(header) {
+    const code = extractCodeText(header);
+    const pageTitle = getTopicTitle() || 'Untitled topic';
+
+    // Skip password blocks entirely; they are folded into the main block's
+    // "Password:" line instead of getting their own search links.
+    if (looksLikePasswordBlock(header, code)) {
+        header.classList.add('kooba_crunched');
+        return;
+    }
+
+    const password = findPassword(header);
+
+    const searchHtml =
+        '<div class="kooba-search-links">' +
+        '<span>Search:</span>' +
+        '<ul>' + buildSearchLinks(code) + '</ul>' +
+        '</div>';
+
+    header.classList.add('kooba_crunched');
+    appendHtmlToAnchor(header, searchHtml);
+    header.insertAdjacentElement('beforeend', makeCopyButton(pageTitle));
+
+    if (header.parentElement) {
+        header.parentElement.insertAdjacentHTML('beforeend',
+            buildNzbdonkeyBlock(pageTitle, code, password));
+    }
+}
+
+/**
+ * Find and process every `.codeheader` on the page exactly once.
+ */
+function processKoobaSearch() {
+    const headers = document.querySelectorAll('.codeheader');
+    for (let i = 0; i < headers.length; i++) {
+        if (headers[i].classList.contains('kooba_crunched')) continue;
+        buildKoobaBlock(headers[i]);
+    }
+}
+
+/**
+ * Insert the "Copy Title" link next to the topic title (if not done yet).
+ */
+function injectKoobaTitleCopy() {
+    if (document.getElementById('kooba-title-copy')) return;
+    const title = getTopicTitle();
+    if (!title) return;
+    createCopyTitleLink(title, document.querySelector('#author'));
+}
+
+/**
+ * Show a small "Copied to clipboard" toast.
+ */
+let koobaToastTimer = null;
+function showCopiedFeedback() {
+    let toast = document.querySelector('.kooba-copied-feedback');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.className = 'kooba-copied-feedback';
+        toast.textContent = 'Copied to clipboard';
+        toast.style.cssText = 'position:fixed;top:10px;right:10px;background:rgba(0,0,0,.75);' +
+            'color:yellow;padding:6px 10px;border-radius:4px;font-family:sans-serif;z-index:99999;';
+        document.body.appendChild(toast);
+    }
+    toast.style.display = 'block';
+    if (koobaToastTimer) clearTimeout(koobaToastTimer);
+    koobaToastTimer = setTimeout(function () {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 2000);
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+(function () {
+    let styleReady = false;
+    let scheduled = false;
+
+    function run() {
+        scheduled = false;
+        if (document.querySelector('.codeheader') && !styleReady) {
+            injectStyle();
+            styleReady = true;
+        }
+        processKoobaSearch();
+        injectKoobaTitleCopy();
+    }
+
+    function schedule() {
+        if (scheduled) return;
+        scheduled = true;
+        setTimeout(run, 150);
+    }
+
+    // Initial pass (document-end: the DOM is ready).
+    run();
+
+    // Re-run when the page loads (late images/scripts can shift the layout).
+    window.addEventListener('load', run, { once: true });
+
+    // Pick up dynamically inserted posts (AJAX "thank you" / new page).
+    if (window.MutationObserver) {
+        const observer = new MutationObserver(schedule);
+        observer.observe(document.body || document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+    } else {
+        setInterval(run, 5000);
+    }
+
+    // Detour the forum's thank-you handler so the block is rebuilt after a
+    // new post is revealed.
+    const sayThanks = window.saythanks;
+    if (sayThanks && sayThanks.prototype && sayThanks.prototype.handleThankClick) {
+        const original = sayThanks.prototype.handleThankClick;
+        sayThanks.prototype.handleThankClick = function (oInput) {
+            if (typeof original === 'function') original.call(this, oInput);
+            setTimeout(run, 250);
+            setTimeout(run, 1000);
+            setTimeout(run, 3000);
+            setTimeout(run, 8000);
+        };
+    }
+})();
 })();
 </script>
 
